@@ -25,6 +25,7 @@ interface ExecutionModalProps {
   onClose: () => void;
   onDownloadZip?: () => void;
   onOpenScriptModal?: () => void;
+  onCancel?: () => void;
 }
 
 export const ExecutionModal: React.FC<ExecutionModalProps> = ({
@@ -36,6 +37,7 @@ export const ExecutionModal: React.FC<ExecutionModalProps> = ({
   onClose,
   onDownloadZip,
   onOpenScriptModal,
+  onCancel,
 }) => {
   const percent = progress.total > 0 ? Math.round((progress.completed / progress.total) * 100) : 0;
   const isMove = operation === 'move';
@@ -268,9 +270,20 @@ export const ExecutionModal: React.FC<ExecutionModalProps> = ({
               Chiudi e Torna ai File
             </button>
           ) : (
-            <div className="flex items-center gap-2 text-xs text-indigo-600 dark:text-indigo-400 font-medium">
-              <Sparkles className="w-3.5 h-3.5 animate-spin" />
-              <span>Elaborazione in corso...</span>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2 text-xs text-indigo-600 dark:text-indigo-400 font-medium">
+                <Sparkles className="w-3.5 h-3.5 animate-spin" />
+                <span>Elaborazione in corso...</span>
+              </div>
+              {onCancel && (
+                <button
+                  onClick={onCancel}
+                  className="px-3 py-1.5 text-xs font-semibold text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-500/30 hover:bg-rose-100 dark:hover:bg-rose-900/50 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
+                >
+                  <XCircle className="w-3.5 h-3.5" />
+                  Annulla
+                </button>
+              )}
             </div>
           )}
         </div>

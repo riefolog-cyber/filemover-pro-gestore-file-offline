@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useMemo, useCallback, useEffect } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { Header } from './components/Header';
 import { OfflineBanner } from './components/OfflineBanner';
 import { FolderSelector } from './components/FolderSelector';
@@ -29,6 +29,7 @@ import {
   getOrCreateDirectoryHandle,
   parseWebkitFileList,
   removeSourceEntry,
+  resolveNativeConflict,
   scanNativeDirectory,
 } from './utils/fileSystem';
 
@@ -99,6 +100,7 @@ export default function App() {
   const [isExecuting, setIsExecuting] = useState(false);
   const [showExecutionModal, setShowExecutionModal] = useState(false);
   const [showScriptModal, setShowScriptModal] = useState(false);
+  const cancelRequestRef = useRef(false);
   const [executionProgress, setExecutionProgress] = useState<ExecutionProgress>({
     total: 0,
     completed: 0,
@@ -351,6 +353,7 @@ export default function App() {
         calculatedDestination: destResult.destinationPath,
         calculatedFilename: destResult.fileName,
         hasConflict: destResult.hasConflict,
+        willSkip: destResult.willSkip,
       };
     });
   }, [rawFiles, criteria, destination.name, settings]);
@@ -393,12 +396,21 @@ export default function App() {
     }
   };
 
+  // Request cancellation of the running operation (checked between files)
+  const handleCancelExecution = useCallback(() => {
+    cancelRequestRef.current = true;
+    setExecutionProgress((prev) =>
+      prev.isComplete ? prev : { ...prev, currentFileName: 'Annullamento in corso...' }
+    );
+  }, []);
+
   // Execute Move / Copy operation REAL ON DISK
   const handleExecuteOperation = async () => {
     const filesToMove = processedFiles.filter((f) => f.matchesFilter && f.selectedForAction);
     const destName = destination.fullPath || destination.name;
     if (filesToMove.length === 0 || !destName.trim()) return;
 
+    cancelRequestRef.current = false;
     setIsExecuting(true);
     setShowExecutionModal(true);
 
@@ -424,59 +436,99 @@ export default function App() {
     ) {
       try {
         const destFolder = destination.fullPath || destination.name;
-        const items = filesToMove.map((f) => ({
-          sourceFullPath: f.fullPath || f.relativePath,
-          destRelativePath: stripDestPrefix(f.calculatedDestination, destination.name),
-        }));
+        const logs: ExecutionLogEntry[] = [];
+        let successCount = 0;
+        let skippedCount = 0;
+        let errorCount = 0;
 
-        const res = await fetch('/api/execute', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            operation: settings.operation,
-            conflictResolution: settings.conflictResolution,
-            destFolder,
-            items,
-          }),
-        });
+        // Process one file per request so the UI shows real-time progress
+        // and the operation can be cancelled between files.
+        for (let i = 0; i < filesToMove.length; i++) {
+          if (cancelRequestRef.current) break;
 
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.error || 'Errore durante l\'esecuzione su disco.');
+          const file = filesToMove[i];
+
+          let res: Response;
+          try {
+            res = await fetch('/api/execute', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                operation: settings.operation,
+                conflictResolution: settings.conflictResolution,
+                destFolder,
+                items: [
+                  {
+                    sourceFullPath: file.fullPath || file.relativePath,
+                    destRelativePath: stripDestPrefix(file.calculatedDestination, destination.name),
+                  },
+                ],
+              }),
+            });
+          } catch (netErr) {
+            // Server unreachable → let the outer catch fall back to browser handles
+            throw netErr;
+          }
+
+          const data = await res.json();
+          const r = (data?.results || [])[0] as
+            | {
+                sourcePath: string;
+                destPath?: string;
+                status: 'success' | 'error' | 'skipped';
+                message: string;
+              }
+            | undefined;
+
+          if (!res.ok || !r) {
+            errorCount++;
+            logs.unshift({
+              id: `log_err_${i}_${file.name}`,
+              timestamp: new Date().toISOString(),
+              fileName: file.name,
+              sourcePath: file.relativePath,
+              destPath: file.calculatedDestination,
+              action: settings.operation,
+              status: 'error',
+              message: data?.error || r?.message || 'Operazione non riuscita',
+            });
+          } else {
+            if (r.status === 'success') successCount++;
+            else if (r.status === 'skipped') skippedCount++;
+            else errorCount++;
+
+            logs.unshift({
+              id: `log_${i}_${file.name}`,
+              timestamp: new Date().toISOString(),
+              fileName: file.name,
+              sourcePath: r.sourcePath || file.relativePath,
+              destPath: r.destPath || file.calculatedDestination,
+              action: settings.operation,
+              status: r.status,
+              message: r.message,
+            });
+          }
+
+          setExecutionProgress({
+            total: filesToMove.length,
+            completed: i + 1,
+            successCount,
+            errorCount,
+            skippedCount,
+            currentFileName: file.name,
+            isExecuting: i + 1 < filesToMove.length && !cancelRequestRef.current,
+            isComplete: i + 1 === filesToMove.length || cancelRequestRef.current,
+            logs,
+          });
         }
 
-        const logs: ExecutionLogEntry[] = (data.results || []).map(
-          (
-            r: {
-              sourcePath: string;
-              destPath?: string;
-              status: 'success' | 'error' | 'skipped';
-              message: string;
-            },
-            idx: number
-          ) => ({
-            id: `log_${idx}`,
-            timestamp: new Date().toISOString(),
-            fileName: r.sourcePath ? r.sourcePath.split(/[/\\]/).pop() || '' : '',
-            sourcePath: r.sourcePath || '',
-            destPath: r.destPath || destFolder,
-            action: settings.operation,
-            status: r.status,
-            message: r.message,
-          })
-        );
-
-        setExecutionProgress({
-          total: filesToMove.length,
-          completed: filesToMove.length,
-          successCount: data.successCount || 0,
-          errorCount: data.errorCount || 0,
-          skippedCount: data.skippedCount || 0,
-          currentFileName: 'Completato con successo',
+        const cancelled = cancelRequestRef.current;
+        setExecutionProgress((prev) => ({
+          ...prev,
           isExecuting: false,
           isComplete: true,
-          logs,
-        });
+          currentFileName: cancelled ? 'Operazione annullata' : 'Completato con successo',
+        }));
 
         // If move was selected, reload the source directory so moved files disappear
         if (settings.operation === 'move' && source?.fullPath) {
@@ -494,18 +546,15 @@ export default function App() {
     let successCount = 0;
     let skippedCount = 0;
     let errorCount = 0;
+    const movedIds = new Set<string>();
 
     const destDirHandle = destination.handle;
     const isMove = settings.operation === 'move';
 
     for (let i = 0; i < filesToMove.length; i++) {
-      const file = filesToMove[i];
+      if (cancelRequestRef.current) break;
 
-      setExecutionProgress((prev) => ({
-        ...prev,
-        completed: i,
-        currentFileName: file.name,
-      }));
+      const file = filesToMove[i];
 
       // Small delay for smooth UI responsiveness
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -518,50 +567,79 @@ export default function App() {
         }
         const targetRelPath = stripDestPrefix(file.calculatedDestination, destination.name);
         const parts = targetRelPath.split('/');
-        const fileName = parts.pop() || file.name;
+        const originalName = parts.pop() || file.name;
         const subPath = parts.join('/');
 
         // Get or create destination subdirectory
         const targetDir = await getOrCreateDirectoryHandle(destDirHandle, subPath);
 
-        // Get file content
-        let blobData: Blob | null = null;
-        if (file.handle) {
-          const f = await file.handle.getFile();
-          blobData = f;
-        } else if (file.fileBlob) {
-          blobData = file.fileBlob;
-        }
+        // Apply the chosen conflict strategy against files already on disk
+        const resolvedName = await resolveNativeConflict(
+          targetDir,
+          originalName,
+          settings.conflictResolution
+        );
 
-        if (!blobData) {
-          throw new Error('Contenuto file non disponibile nel browser (ricarica la cartella di origine).');
-        }
+        if (resolvedName === null) {
+          skippedCount++;
+          logs.unshift({
+            id: `log_skip_${i}_${file.name}`,
+            timestamp: new Date().toISOString(),
+            fileName: file.name,
+            sourcePath: file.relativePath,
+            destPath: file.calculatedDestination,
+            action: settings.operation,
+            status: 'skipped',
+            message: 'Saltato: file già presente nella destinazione',
+          });
+        } else {
+          const fileName = resolvedName;
+          const resolvedDest =
+            file.calculatedDestination.slice(
+              0,
+              file.calculatedDestination.length - originalName.length
+            ) + fileName;
 
-        const newFileHandle = await targetDir.getFileHandle(fileName, { create: true });
-        const writable = await newFileHandle.createWritable();
-        await writable.write(blobData);
-        await writable.close();
-
-        // If move and we have source directory handle, remove source file
-        if (isMove && source?.handle) {
-          try {
-            await removeSourceEntry(source.handle, file.relativePath);
-          } catch (delErr) {
-            console.warn('Impossibile eliminare file originale:', delErr);
+          // Get file content
+          let blobData: Blob | null = null;
+          if (file.handle) {
+            const f = await file.handle.getFile();
+            blobData = f;
+          } else if (file.fileBlob) {
+            blobData = file.fileBlob;
           }
-        }
 
-        successCount++;
-        logs.unshift({
-          id: `log_${i}_${file.name}`,
-          timestamp: new Date().toISOString(),
-          fileName: file.name,
-          sourcePath: file.relativePath,
-          destPath: file.calculatedDestination,
-          action: settings.operation,
-          status: 'success',
-          message: `${isMove ? 'Spostato fisicamente su disco in' : 'Copiato fisicamente su disco in'} ${file.calculatedDestination}`,
-        });
+          if (!blobData) {
+            throw new Error('Contenuto file non disponibile nel browser (ricarica la cartella di origine).');
+          }
+
+          const newFileHandle = await targetDir.getFileHandle(fileName, { create: true });
+          const writable = await newFileHandle.createWritable();
+          await writable.write(blobData);
+          await writable.close();
+
+          // If move and we have source directory handle, remove source file
+          if (isMove && source?.handle) {
+            try {
+              await removeSourceEntry(source.handle, file.relativePath);
+            } catch (delErr) {
+              console.warn('Impossibile eliminare file originale:', delErr);
+            }
+          }
+
+          successCount++;
+          if (isMove) movedIds.add(file.id);
+          logs.unshift({
+            id: `log_${i}_${file.name}`,
+            timestamp: new Date().toISOString(),
+            fileName: file.name,
+            sourcePath: file.relativePath,
+            destPath: resolvedDest,
+            action: settings.operation,
+            status: 'success',
+            message: `${isMove ? 'Spostato fisicamente su disco in' : 'Copiato fisicamente su disco in'} ${resolvedDest}`,
+          });
+        }
       } catch (err: unknown) {
         errorCount++;
         logs.unshift({
@@ -583,15 +661,24 @@ export default function App() {
         errorCount,
         skippedCount,
         currentFileName: file.name,
-        isExecuting: i + 1 < filesToMove.length,
-        isComplete: i + 1 === filesToMove.length,
+        isExecuting: i + 1 < filesToMove.length && !cancelRequestRef.current,
+        isComplete: i + 1 === filesToMove.length || cancelRequestRef.current,
         logs,
       });
     }
 
-    // Remove moved files from rawFiles
-    if (isMove && destDirHandle) {
-      const movedIds = new Set(filesToMove.map((f) => f.id));
+    // Finalize when cancelled before the last file
+    if (cancelRequestRef.current) {
+      setExecutionProgress((prev) => ({
+        ...prev,
+        isExecuting: false,
+        isComplete: true,
+        currentFileName: 'Operazione annullata',
+      }));
+    }
+
+    // Remove from the UI only the files actually moved on disk
+    if (isMove) {
       setRawFiles((prev) => prev.filter((f) => !movedIds.has(f.id)));
     }
 
@@ -675,6 +762,7 @@ export default function App() {
           onClose={() => setShowExecutionModal(false)}
           onDownloadZip={handleDownloadZip}
           onOpenScriptModal={() => setShowScriptModal(true)}
+          onCancel={handleCancelExecution}
         />
       )}
 

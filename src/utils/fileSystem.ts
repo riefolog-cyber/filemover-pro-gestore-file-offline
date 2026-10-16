@@ -5,6 +5,7 @@
 
 import JSZip from 'jszip';
 import {
+  ConflictResolution,
   DestinationSettings,
   FileItem,
   FilterCriteria,
@@ -671,6 +672,42 @@ export async function getOrCreateDirectoryHandle(
     currentHandle = await currentHandle.getDirectoryHandle(part, { create: true });
   }
   return currentHandle;
+}
+
+/**
+ * Resolves name conflicts against files already present on disk (File System Access API).
+ * Returns the final file name to use, or null if the file must be skipped.
+ */
+export async function resolveNativeConflict(
+  targetDir: FileSystemDirectoryHandle,
+  fileName: string,
+  conflictResolution: ConflictResolution
+): Promise<string | null> {
+  const exists = async (name: string): Promise<boolean> => {
+    try {
+      await targetDir.getFileHandle(name);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  if (!(await exists(fileName))) return fileName;
+
+  if (conflictResolution === 'skip') return null;
+  if (conflictResolution === 'overwrite') return fileName;
+
+  // rename: append "(1)", "(2)"... until a free name is found
+  const dotIndex = fileName.lastIndexOf('.');
+  const baseName = dotIndex > 0 ? fileName.substring(0, dotIndex) : fileName;
+  const ext = dotIndex > 0 ? fileName.substring(dotIndex) : '';
+  let counter = 1;
+  let candidate = `${baseName} (${counter})${ext}`;
+  while (await exists(candidate)) {
+    counter++;
+    candidate = `${baseName} (${counter})${ext}`;
+  }
+  return candidate;
 }
 
 /**

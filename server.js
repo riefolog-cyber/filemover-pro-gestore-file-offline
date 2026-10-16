@@ -20,6 +20,15 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PORT = process.env.PORT || 3000;
 
+// Timeout for the native folder-picker dialog (generous: user may take a while).
+// Prevents the /api/browse request from hanging forever if the dialog gets stuck.
+const BROWSE_DIALOG_TIMEOUT_MS = 5 * 60 * 1000;
+const BROWSE_DIALOG_OPTS = {
+  timeout: BROWSE_DIALOG_TIMEOUT_MS,
+  maxBuffer: 1024 * 1024,
+  killSignal: 'SIGKILL',
+};
+
 function parseJsonBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
@@ -243,7 +252,7 @@ try {
         const base64 = Buffer.from(psScript, 'utf16le').toString('base64');
         const psCommand = `powershell -STA -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${base64}`;
 
-        exec(psCommand, (err, stdout) => {
+        exec(psCommand, BROWSE_DIALOG_OPTS, (err, stdout) => {
           if (err) {
             sendJson(res, 200, { selectedPath: null, cancelled: true });
             return;
@@ -258,13 +267,13 @@ try {
         return;
       } else if (process.platform === 'darwin') {
         const osascript = `osascript -e 'tell application "System Events" to activate' -e 'try' -e 'set f to choose folder with prompt "Seleziona cartella:"' -e 'POSIX path of f' -e 'end try'`;
-        exec(osascript, (_err, stdout) => {
+        exec(osascript, BROWSE_DIALOG_OPTS, (_err, stdout) => {
           const selected = stdout.trim();
           sendJson(res, 200, { selectedPath: selected || null, cancelled: !selected });
         });
         return;
       } else {
-        exec('zenity --file-selection --directory', (_err, stdout) => {
+        exec('zenity --file-selection --directory', BROWSE_DIALOG_OPTS, (_err, stdout) => {
           const selected = stdout.trim();
           sendJson(res, 200, { selectedPath: selected || null, cancelled: !selected });
         });

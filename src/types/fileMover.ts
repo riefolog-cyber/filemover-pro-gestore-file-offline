@@ -85,7 +85,7 @@ export interface FileItem {
   
   // Conflict status
   hasConflict?: boolean;
-  conflictResolvedName?: string;
+  willSkip?: boolean;
   
   // Execution state
   status?: 'pending' | 'moving' | 'success' | 'error' | 'skipped';
@@ -119,17 +119,6 @@ export interface ServerStatus {
     pictures?: string;
     home?: string;
   };
-}
-
-export interface SystemDrive {
-  path: string;
-  name: string;
-}
-
-export interface DirectoryItem {
-  name: string;
-  fullPath: string;
-  mtimeMs?: number;
 }
 
 export interface ExecutionProgress {

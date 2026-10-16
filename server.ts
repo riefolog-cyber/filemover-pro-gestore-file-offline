@@ -22,6 +22,14 @@ const execAsync = promisify(exec);
 const isProd = process.env.NODE_ENV === 'production';
 const PORT = process.env.PORT || 3000;
 
+// Timeout for the native folder-picker dialog (generous: user may take a while).
+// Prevents the /api/browse request from hanging forever if the dialog gets stuck.
+const BROWSE_DIALOG_OPTS = {
+  timeout: 5 * 60 * 1000,
+  maxBuffer: 1024 * 1024,
+  killSignal: 'SIGKILL' as const,
+};
+
 async function startServer() {
   const app = express();
   app.use(express.json({ limit: '50mb' }));
@@ -213,7 +221,7 @@ try {
         const base64 = Buffer.from(psScript, 'utf16le').toString('base64');
         const psCommand = `powershell -STA -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${base64}`;
 
-        const { stdout } = await execAsync(psCommand);
+        const { stdout } = await execAsync(psCommand, BROWSE_DIALOG_OPTS);
         const selected = stdout.trim();
         if (selected && fs.existsSync(selected)) {
           return res.json({ selectedPath: selected, cancelled: false });
@@ -222,7 +230,7 @@ try {
       } else if (process.platform === 'darwin') {
         // macOS AppleScript folder chooser brought to front
         const osascript = `osascript -e 'tell application "System Events" to activate' -e 'try' -e 'set f to choose folder with prompt "Seleziona cartella:"' -e 'POSIX path of f' -e 'end try'`;
-        const { stdout } = await execAsync(osascript);
+        const { stdout } = await execAsync(osascript, BROWSE_DIALOG_OPTS);
         const selected = stdout.trim();
         if (selected && fs.existsSync(selected)) {
           return res.json({ selectedPath: selected, cancelled: false });
@@ -231,7 +239,7 @@ try {
       } else {
         // Linux zenity or kdialog
         try {
-          const { stdout } = await execAsync('zenity --file-selection --directory --title="Seleziona Cartella"');
+          const { stdout } = await execAsync('zenity --file-selection --directory --title="Seleziona Cartella"', BROWSE_DIALOG_OPTS);
           const selected = stdout.trim();
           if (selected && fs.existsSync(selected)) {
             return res.json({ selectedPath: selected, cancelled: false });

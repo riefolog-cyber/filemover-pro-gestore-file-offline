@@ -409,11 +409,15 @@ export const PreviewSection: React.FC<PreviewSectionProps> = ({
                               <span className="truncate max-w-[240px]" title={file.calculatedDestination}>
                                 {file.calculatedDestination}
                               </span>
-                              {file.hasConflict && (
+                              {file.willSkip ? (
+                                <span className="text-[10px] bg-rose-100 text-rose-800 dark:bg-rose-500/20 dark:text-rose-300 px-1.5 py-0.2 rounded shrink-0">
+                                  Sarà saltato
+                                </span>
+                              ) : file.hasConflict ? (
                                 <span className="text-[10px] bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300 px-1.5 py-0.2 rounded shrink-0">
                                   Rinominato
                                 </span>
-                              )}
+                              ) : null}
                             </div>
                           ) : (
                             <span className="text-slate-400 dark:text-slate-600 italic text-[11px]">
